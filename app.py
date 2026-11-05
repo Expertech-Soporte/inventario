@@ -229,6 +229,14 @@ def initialize_database():
         )
 
     with get_connection() as connection:
+        registered_companies = connection.execute(
+            "SELECT id, name, database_file FROM companies ORDER BY id"
+        ).fetchall()
+    for company in registered_companies:
+        if company["database_file"]:
+            initialize_company_database(COMPANY_DATABASE_DIR / company["database_file"])
+
+    with get_connection() as connection:
         companies = connection.execute(
             "SELECT id, name, database_file FROM companies ORDER BY id"
         ).fetchall()
@@ -334,6 +342,7 @@ def get_company_logo(company_id, company_name):
 def create_company(name, uploaded_logo=None):
     if uploaded_logo is None:
         raise ValueError("Adjunta el logo de la empresa.")
+    name = name.strip()
     with get_connection() as connection:
         existing_files = {
             row["database_file"]
@@ -341,19 +350,20 @@ def create_company(name, uploaded_logo=None):
                 "SELECT database_file FROM companies WHERE database_file IS NOT NULL"
             )
         }
-        base_name = company_database_slug(name.strip())
+        base_name = company_database_slug(name)
         database_file = f"{base_name}.db"
         suffix = 2
         while database_file in existing_files:
             database_file = f"{base_name}-{suffix}.db"
             suffix += 1
-        logo_file = save_company_logo(uploaded_logo, name.strip())
+        logo_file = save_company_logo(uploaded_logo, name)
         cursor = connection.execute(
             "INSERT INTO companies (name, database_file, logo_file) VALUES (?, ?, ?)",
-            (name.strip(), database_file, logo_file),
+            (name, database_file, logo_file),
         )
-        initialize_company_database(COMPANY_DATABASE_DIR / database_file)
-        return cursor.lastrowid
+        company_id = cursor.lastrowid
+    initialize_company_database(COMPANY_DATABASE_DIR / database_file)
+    return company_id
 
 
 def update_company(company_id, name, uploaded_logo=None):
