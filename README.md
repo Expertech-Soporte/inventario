@@ -44,11 +44,15 @@ La contraseña del administrador se almacena como un hash con salt; no se guarda
 en texto plano.
 
 Al agregar una empresa desde el panel de administrador, puedes seleccionar su
-logo en formato PNG, JPG, JPEG o WEBP. El archivo se guarda en `logos/` y queda
-asociado a esa empresa.
+logo obligatorio en formato PNG, JPG, JPEG o WEBP. El archivo se guarda en
+`logos/`, se crea su base en `db/empresas/` y ambos quedan asociados a esa
+empresa.
 
 Desde **Modificar empresa**, el administrador puede cambiar el nombre y subir
 un nuevo logo sin afectar la base de datos de esa empresa.
+
+Antes de cada primera ejecución del día, la aplicación crea una copia automática
+en `db/respaldos/YYYY-MM-DD/`. Mantén también respaldos externos de esta carpeta.
 
 ## Campos de la hoja de vida
 

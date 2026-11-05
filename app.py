@@ -1,9 +1,11 @@
 import hashlib
 import hmac
 import os
+import shutil
 import sqlite3
 import unicodedata
 from datetime import date
+from datetime import datetime
 from pathlib import Path
 
 import streamlit as st
@@ -12,6 +14,7 @@ import streamlit as st
 BASE_DIR = Path(__file__).resolve().parent
 DATABASE_PATH = BASE_DIR / "db" / "inventario.db"
 COMPANY_DATABASE_DIR = BASE_DIR / "db" / "empresas"
+BACKUP_DATABASE_DIR = BASE_DIR / "db" / "respaldos"
 LOGO_PATH = BASE_DIR / "logos" / "Logo-con-Slogan.jpg"
 DEJANDO_HUELLA_LOGO_PATH = BASE_DIR / "logos" / "logo-dejando-huella.png"
 COMPANY_LOGOS = {
@@ -73,6 +76,21 @@ INVENTORY_COLUMNS = {
 }
 
 st.set_page_config(page_title="Inventario | Equipos Gleason", page_icon="📋", layout="wide")
+
+
+def create_database_backups():
+    backup_directory = BACKUP_DATABASE_DIR / datetime.now().strftime("%Y-%m-%d")
+    backup_directory.mkdir(parents=True, exist_ok=True)
+
+    databases = [DATABASE_PATH, *COMPANY_DATABASE_DIR.glob("*.db")]
+    for database_path in databases:
+        if not database_path.exists():
+            continue
+        backup_path = backup_directory / database_path.name
+        if database_path.parent == COMPANY_DATABASE_DIR:
+            backup_path = backup_directory / f"empresas-{database_path.name}"
+        if not backup_path.exists():
+            shutil.copy2(database_path, backup_path)
 
 
 def get_connection(database_path=DATABASE_PATH):
@@ -314,6 +332,8 @@ def get_company_logo(company_id, company_name):
 
 
 def create_company(name, uploaded_logo=None):
+    if uploaded_logo is None:
+        raise ValueError("Adjunta el logo de la empresa.")
     with get_connection() as connection:
         existing_files = {
             row["database_file"]
@@ -358,6 +378,37 @@ def update_company(company_id, name, uploaded_logo=None):
             "UPDATE companies SET name = ?, logo_file = ? WHERE id = ?",
             (name, logo_file, company_id),
         )
+
+
+def delete_company(company_id):
+    with get_connection() as connection:
+        company = connection.execute(
+            "SELECT name, database_file, logo_file FROM companies WHERE id = ?",
+            (company_id,),
+        ).fetchone()
+        if company is None:
+            raise ValueError("La empresa seleccionada no existe.")
+
+        database_path = COMPANY_DATABASE_DIR / company["database_file"]
+        if database_path.exists():
+            deleted_backup_directory = BACKUP_DATABASE_DIR / "eliminadas"
+            deleted_backup_directory.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(
+                database_path,
+                deleted_backup_directory / f"{datetime.now().strftime('%Y%m%d-%H%M%S')}-{company['database_file']}",
+            )
+
+        connection.execute("DELETE FROM companies WHERE id = ?", (company_id,))
+
+    if database_path.exists():
+        database_path.unlink()
+
+    logo_file = company["logo_file"]
+    if logo_file:
+        logo_path = BASE_DIR / "logos" / logo_file
+        built_in_logos = {LOGO_PATH.name, DEJANDO_HUELLA_LOGO_PATH.name}
+        if logo_path.exists() and logo_file not in built_in_logos:
+            logo_path.unlink()
 
 
 def get_equipment(company_id):
@@ -570,7 +621,7 @@ def render_company_management():
         with st.form("create_company_form"):
             company_name = st.text_input("Nombre de la empresa")
             company_logo = st.file_uploader(
-                "Logo de la empresa",
+                "Logo de la empresa (obligatorio)",
                 type=["png", "jpg", "jpeg", "webp"],
             )
             submitted = st.form_submit_button("Agregar empresa")
@@ -631,6 +682,42 @@ def render_company_management():
             st.success("Datos de la empresa actualizados.")
             st.rerun()
 
+    with st.sidebar.expander("Eliminar empresa"):
+        companies = get_companies()
+        if not companies:
+            st.sidebar.info("No hay empresas registradas.")
+            return
+        company_names = {company["id"]: company["name"] for company in companies}
+        company_id = st.selectbox(
+            "Empresa que deseas eliminar",
+            options=list(company_names),
+            format_func=company_names.get,
+            key="company_to_delete",
+        )
+        company_name = company_names[company_id]
+        st.sidebar.warning(
+            f"Se eliminará '{company_name}' y todos sus equipos. "
+            "Se conservará una copia de seguridad de su base."
+        )
+        confirmed = st.checkbox(
+            "Confirmo eliminar esta empresa y su inventario",
+            key="confirm_delete_company",
+        )
+        if st.sidebar.button(
+            "Eliminar empresa",
+            disabled=not confirmed,
+            type="secondary",
+            key="delete_company_button",
+        ):
+            try:
+                delete_company(company_id)
+            except ValueError as error:
+                st.sidebar.error(str(error))
+                return
+            st.session_state.pop("company_selected", None)
+            st.success(f"Empresa '{company_name}' eliminada.")
+            st.rerun()
+
 
 def render_admin_access():
     st.sidebar.header("Acceso")
@@ -673,6 +760,7 @@ def render_admin_access():
     return False
 
 
+create_database_backups()
 initialize_database()
 is_admin = render_admin_access()
 
