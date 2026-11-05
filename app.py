@@ -4,6 +4,7 @@ import os
 import shutil
 import sqlite3
 import unicodedata
+import subprocess
 from datetime import date
 from datetime import datetime
 from io import BytesIO
@@ -98,6 +99,50 @@ def create_database_backups():
             backup_path = backup_directory / f"empresas-{database_path.name}"
         if not backup_path.exists():
             shutil.copy2(database_path, backup_path)
+
+
+def sync_runtime_files(files):
+    existing_files = [str(path.relative_to(BASE_DIR)) for path in files if path.exists()]
+    if not existing_files:
+        return
+    try:
+        subprocess.run(
+            ["git", "-C", str(BASE_DIR), "add", "--", *existing_files],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(BASE_DIR), "add", "-A", "--", "db", "logos"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        status = subprocess.run(
+            ["git", "-C", str(BASE_DIR), "diff", "--cached", "--quiet"],
+            capture_output=True,
+            text=True,
+        )
+        if status.returncode == 0:
+            return
+        subprocess.run(
+            [
+                "git",
+                "-C",
+                str(BASE_DIR),
+                "commit",
+                "-m",
+                "Guardar cambios de empresas e inventario",
+                "--no-verify",
+                "-m",
+                "Co-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>",
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return
 
 
 def get_connection(database_path=DATABASE_PATH):
@@ -391,6 +436,7 @@ def create_company(name, uploaded_logo=None):
         raise RuntimeError("No se pudo crear la base de datos de la empresa.")
     if not (BASE_DIR / "logos" / logo_file).exists():
         raise RuntimeError("No se pudo guardar el logo de la empresa.")
+    sync_runtime_files([DATABASE_PATH, database_path, BASE_DIR / "logos" / logo_file])
     return company_id
 
 
@@ -416,6 +462,7 @@ def update_company(company_id, name, uploaded_logo=None):
             "UPDATE companies SET name = ?, logo_file = ? WHERE id = ?",
             (name, logo_file, company_id),
         )
+    sync_runtime_files([DATABASE_PATH, BASE_DIR / "logos" / logo_file])
 
 
 def delete_company(company_id):
@@ -447,6 +494,7 @@ def delete_company(company_id):
         built_in_logos = {LOGO_PATH.name, DEJANDO_HUELLA_LOGO_PATH.name}
         if logo_path.exists() and logo_file not in built_in_logos:
             logo_path.unlink()
+    sync_runtime_files([DATABASE_PATH, database_path])
 
 
 def get_equipment(company_id):
@@ -484,6 +532,7 @@ def save_equipment(values, company_id, equipment_id=None):
                 "WHERE id = ?",
                 [*field_values, equipment_id],
             )
+    sync_runtime_files([database_path, DATABASE_PATH])
 
 
 def delete_equipment(equipment_id, company_id):
@@ -495,6 +544,7 @@ def delete_equipment(equipment_id, company_id):
             "DELETE FROM equipment WHERE id = ?",
             (equipment_id,),
         )
+    sync_runtime_files([database_path, DATABASE_PATH])
 
 
 def draw_equipment_form(data, prefix):
