@@ -293,6 +293,36 @@ def initialize_database():
             "SELECT id, name, database_file FROM companies ORDER BY id"
         ).fetchall()
 
+        registered_files = {
+            company["database_file"] for company in companies if company["database_file"]
+        }
+        for orphan_database in sorted(COMPANY_DATABASE_DIR.glob("*.db")):
+            if orphan_database.name in registered_files:
+                continue
+            name = orphan_database.stem.replace("-", " ")
+            name_parts = name.split()
+            reconstructed_name = " ".join(
+                part.upper() if len(part) <= 3 else part.capitalize()
+                for part in name_parts
+            )
+            matching_logo = next(
+                (
+                    logo.name
+                    for logo in (BASE_DIR / "logos").glob("*")
+                    if logo.stem.casefold() == orphan_database.stem.casefold()
+                    and logo.suffix.lower() in {".png", ".jpg", ".jpeg", ".webp"}
+                ),
+                None,
+            )
+            try:
+                connection.execute(
+                    "INSERT INTO companies (name, database_file, logo_file) VALUES (?, ?, ?)",
+                    (reconstructed_name, orphan_database.name, matching_logo),
+                )
+            except sqlite3.IntegrityError:
+                continue
+            registered_files.add(orphan_database.name)
+
     used_database_files = set()
     for company in companies:
         database_file = company["database_file"]
