@@ -336,6 +336,30 @@ def create_company(name, uploaded_logo=None):
         return cursor.lastrowid
 
 
+def update_company(company_id, name, uploaded_logo=None):
+    name = name.strip()
+    with get_connection() as connection:
+        duplicate = connection.execute(
+            "SELECT 1 FROM companies WHERE LOWER(name) = LOWER(?) AND id != ?",
+            (name, company_id),
+        ).fetchone()
+        if duplicate:
+            raise ValueError("Ya existe otra empresa con ese nombre.")
+
+        company = connection.execute(
+            "SELECT logo_file FROM companies WHERE id = ?", (company_id,)
+        ).fetchone()
+        if company is None:
+            raise ValueError("La empresa seleccionada no existe.")
+        logo_file = company["logo_file"]
+        if uploaded_logo is not None:
+            logo_file = save_company_logo(uploaded_logo, name)
+        connection.execute(
+            "UPDATE companies SET name = ?, logo_file = ? WHERE id = ?",
+            (name, logo_file, company_id),
+        )
+
+
 def get_equipment(company_id):
     database_path = get_company_database_path(company_id)
     if database_path is None:
@@ -567,6 +591,44 @@ def render_company_management():
                 st.sidebar.error(str(error))
                 return
             st.session_state["company_selected"] = company_id
+            st.rerun()
+
+    with st.sidebar.expander("Modificar empresa"):
+        companies = get_companies()
+        if not companies:
+            st.sidebar.info("No hay empresas registradas.")
+            return
+        company_names = {company["id"]: company["name"] for company in companies}
+        company_id = st.selectbox(
+            "Empresa",
+            options=list(company_names),
+            format_func=company_names.get,
+            key="company_to_edit",
+        )
+        company = next(item for item in companies if item["id"] == company_id)
+        with st.form("update_company_form"):
+            updated_name = st.text_input("Nombre de la empresa", value=company["name"])
+            updated_logo = st.file_uploader(
+                "Nuevo logo (opcional)",
+                type=["png", "jpg", "jpeg", "webp"],
+                key="update_company_logo",
+            )
+            current_logo = get_company_logo(company_id, company["name"])
+            if current_logo and current_logo.exists():
+                st.image(str(current_logo), width=180)
+            submitted = st.form_submit_button("Guardar cambios")
+        if submitted:
+            updated_name = updated_name.strip()
+            if not updated_name:
+                st.sidebar.error("Escribe el nombre de la empresa.")
+                return
+            try:
+                update_company(company_id, updated_name, updated_logo)
+            except ValueError as error:
+                st.sidebar.error(str(error))
+                return
+            st.session_state["company_selected"] = company_id
+            st.success("Datos de la empresa actualizados.")
             st.rerun()
 
 

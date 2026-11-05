@@ -47,6 +47,9 @@ Al agregar una empresa desde el panel de administrador, puedes seleccionar su
 logo en formato PNG, JPG, JPEG o WEBP. El archivo se guarda en `logos/` y queda
 asociado a esa empresa.
 
+Desde **Modificar empresa**, el administrador puede cambiar el nombre y subir
+un nuevo logo sin afectar la base de datos de esa empresa.
+
 ## Campos de la hoja de vida
 
 Proveedor, entrada/factura, nombre y tipo de equipo, área, asignado, cargo,
