@@ -6,9 +6,16 @@ import sqlite3
 import unicodedata
 from datetime import date
 from datetime import datetime
+from io import BytesIO
 from pathlib import Path
 
 import streamlit as st
+from reportlab.lib import colors
+from reportlab.lib.enums import TA_CENTER
+from reportlab.lib.pagesizes import landscape, letter
+from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
+from reportlab.lib.units import inch
+from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -240,8 +247,24 @@ def initialize_database():
         companies = connection.execute(
             "SELECT id, name, database_file FROM companies ORDER BY id"
         ).fetchall()
+
+    used_database_files = set()
     for company in companies:
-        database_path = COMPANY_DATABASE_DIR / company["database_file"]
+        database_file = company["database_file"]
+        if not database_file:
+            base_name = company_database_slug(company["name"])
+            database_file = f"{base_name}.db"
+            suffix = 2
+            while database_file in used_database_files or (COMPANY_DATABASE_DIR / database_file).exists():
+                database_file = f"{base_name}-{suffix}.db"
+                suffix += 1
+            with get_connection() as connection:
+                connection.execute(
+                    "UPDATE companies SET database_file = ? WHERE id = ?",
+                    (database_file, company["id"]),
+                )
+        used_database_files.add(database_file)
+        database_path = COMPANY_DATABASE_DIR / database_file
         initialize_company_database(database_path)
         records = [
             record
@@ -343,6 +366,7 @@ def create_company(name, uploaded_logo=None):
     if uploaded_logo is None:
         raise ValueError("Adjunta el logo de la empresa.")
     name = name.strip()
+    logo_file = save_company_logo(uploaded_logo, name)
     with get_connection() as connection:
         existing_files = {
             row["database_file"]
@@ -356,13 +380,17 @@ def create_company(name, uploaded_logo=None):
         while database_file in existing_files:
             database_file = f"{base_name}-{suffix}.db"
             suffix += 1
-        logo_file = save_company_logo(uploaded_logo, name)
         cursor = connection.execute(
             "INSERT INTO companies (name, database_file, logo_file) VALUES (?, ?, ?)",
             (name, database_file, logo_file),
         )
         company_id = cursor.lastrowid
-    initialize_company_database(COMPANY_DATABASE_DIR / database_file)
+    database_path = COMPANY_DATABASE_DIR / database_file
+    initialize_company_database(database_path)
+    if not database_path.exists():
+        raise RuntimeError("No se pudo crear la base de datos de la empresa.")
+    if not (BASE_DIR / "logos" / logo_file).exists():
+        raise RuntimeError("No se pudo guardar el logo de la empresa.")
     return company_id
 
 
@@ -522,7 +550,63 @@ def show_record_details(record):
                     st.write(record.get(key) or "—")
 
 
-def render_inventory(records):
+def create_inventory_pdf(company_name, records):
+    buffer = BytesIO()
+    document = SimpleDocTemplate(
+        buffer,
+        pagesize=landscape(letter),
+        leftMargin=0.35 * inch,
+        rightMargin=0.35 * inch,
+        topMargin=0.35 * inch,
+        bottomMargin=0.35 * inch,
+    )
+    styles = getSampleStyleSheet()
+    title_style = ParagraphStyle(
+        "InventoryTitle",
+        parent=styles["Title"],
+        alignment=TA_CENTER,
+        fontSize=16,
+        leading=19,
+    )
+    elements = [
+        Paragraph(company_name, title_style),
+        Paragraph(
+            f"Informe de inventario - {datetime.now().strftime('%d/%m/%Y %H:%M')}",
+            ParagraphStyle(
+                "InventorySubtitle",
+                parent=styles["Normal"],
+                alignment=TA_CENTER,
+                fontSize=9,
+            ),
+        ),
+        Spacer(1, 0.15 * inch),
+        Paragraph(f"Equipos registrados: {len(records)}", styles["Normal"]),
+        Spacer(1, 0.12 * inch),
+    ]
+    headers = ["ID", *INVENTORY_COLUMNS.values()]
+    rows = [
+        [str(record["id"]), *[str(record.get(key) or "") for key in INVENTORY_COLUMNS]]
+        for record in records
+    ]
+    table = Table([headers, *rows], repeatRows=1)
+    table.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#1f4e78")),
+        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+        ("FONTSIZE", (0, 0), (-1, -1), 7),
+        ("ALIGN", (0, 0), (0, -1), "CENTER"),
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("GRID", (0, 0), (-1, -1), 0.4, colors.grey),
+        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#edf3f8")]),
+        ("TOPPADDING", (0, 0), (-1, -1), 4),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+    ]))
+    elements.append(table)
+    document.build(elements)
+    return buffer.getvalue()
+
+
+def render_inventory(records, company_name):
     st.subheader("Inventario de equipos")
     st.caption("Cada hoja de vida guardada también aparece aquí como un registro del inventario.")
     if not records:
@@ -541,6 +625,14 @@ def render_inventory(records):
         or any(search in str(record.get(key, "")).casefold() for key in FIELD_KEYS)
     ]
     st.metric("Equipos registrados", len(records))
+    pdf_data = create_inventory_pdf(company_name, filtered)
+    st.download_button(
+        "Descargar informe PDF",
+        data=pdf_data,
+        file_name=f"inventario-{company_database_slug(company_name)}-{datetime.now().strftime('%Y%m%d')}.pdf",
+        mime="application/pdf",
+        key=f"download_inventory_pdf_{company_name}",
+    )
     if not filtered:
         st.info("No se encontraron equipos con esa búsqueda.")
         return
@@ -649,7 +741,7 @@ def render_company_management():
                 return
             try:
                 company_id = create_company(company_name, company_logo)
-            except ValueError as error:
+            except (ValueError, RuntimeError) as error:
                 st.sidebar.error(str(error))
                 return
             st.session_state["company_selected"] = company_id
@@ -801,6 +893,6 @@ with header_logo:
 records = get_equipment(selected_company_id)
 inventory_tab, sheets_tab = st.tabs(["Inventario", "Hojas de vida"])
 with inventory_tab:
-    render_inventory(records)
+    render_inventory(records, selected_company_name)
 with sheets_tab:
     render_sheets(records, is_admin, selected_company_id)
