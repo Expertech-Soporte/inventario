@@ -8,9 +8,9 @@ from pathlib import Path
 import streamlit as st
 
 
-DATABASE_PATH = Path(__file__).with_name("inventario.db")
-LOGO_PATH = Path(__file__).with_name("Logo-con-Slogan.jpg")
-DEJANDO_HUELLA_LOGO_PATH = Path(__file__).with_name("logo-dejando-huella.png")
+DATABASE_PATH = Path(__file__).with_name("db\inventario.db")
+LOGO_PATH = Path(__file__).with_name("logos\Logo-con-Slogan.jpg")
+DEJANDO_HUELLA_LOGO_PATH = Path(__file__).with_name("logos\logo-dejando-huella.png")
 COMPANY_LOGOS = {
     "Equipos Gleason S.A.": LOGO_PATH,
     "Dejando Huella Fertilidad": DEJANDO_HUELLA_LOGO_PATH,
