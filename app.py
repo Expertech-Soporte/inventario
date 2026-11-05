@@ -564,6 +564,7 @@ def render_sheets(records, is_admin, company_id):
     st.caption("La hoja de vida concentra los datos técnicos, de asignación y mantenimiento de cada equipo.")
 
     if is_admin:
+        st.success("Modo administrador activo: puedes agregar, modificar y eliminar hojas de vida.")
         with st.expander("Crear hoja de vida", expanded=not records):
             with st.form("create_equipment_form"):
                 values = draw_equipment_form({}, "new")
