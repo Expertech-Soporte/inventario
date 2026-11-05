@@ -2,15 +2,18 @@ import hashlib
 import hmac
 import os
 import sqlite3
+import unicodedata
 from datetime import date
 from pathlib import Path
 
 import streamlit as st
 
 
-DATABASE_PATH = Path(__file__).with_name("db\inventario.db")
-LOGO_PATH = Path(__file__).with_name("logos\Logo-con-Slogan.jpg")
-DEJANDO_HUELLA_LOGO_PATH = Path(__file__).with_name("logos\logo-dejando-huella.png")
+BASE_DIR = Path(__file__).resolve().parent
+DATABASE_PATH = BASE_DIR / "db" / "inventario.db"
+COMPANY_DATABASE_DIR = BASE_DIR / "db" / "empresas"
+LOGO_PATH = BASE_DIR / "logos" / "Logo-con-Slogan.jpg"
+DEJANDO_HUELLA_LOGO_PATH = BASE_DIR / "logos" / "logo-dejando-huella.png"
 COMPANY_LOGOS = {
     "Equipos Gleason S.A.": LOGO_PATH,
     "Dejando Huella Fertilidad": DEJANDO_HUELLA_LOGO_PATH,
@@ -72,11 +75,46 @@ INVENTORY_COLUMNS = {
 st.set_page_config(page_title="Inventario | Equipos Gleason", page_icon="📋", layout="wide")
 
 
-def get_connection():
-    connection = sqlite3.connect(DATABASE_PATH)
+def get_connection(database_path=DATABASE_PATH):
+    DATABASE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    database_path = Path(database_path)
+    database_path.parent.mkdir(parents=True, exist_ok=True)
+    connection = sqlite3.connect(database_path)
     connection.row_factory = sqlite3.Row
     connection.execute("PRAGMA foreign_keys = ON")
     return connection
+
+
+def company_database_slug(name):
+    normalized = unicodedata.normalize("NFKD", name).encode("ascii", "ignore").decode()
+    slug = "".join(character if character.isalnum() else "-" for character in normalized.lower())
+    slug = "-".join(filter(None, slug.split("-")))
+    return slug or "empresa"
+
+
+def initialize_company_database(database_path):
+    definitions = ", ".join(f'"{key}" TEXT NOT NULL DEFAULT \'\' ' for key in FIELD_KEYS)
+    with get_connection(database_path) as connection:
+        connection.execute(
+            f"""
+            CREATE TABLE IF NOT EXISTS equipment (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                {definitions},
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+
+
+def get_company_database_path(company_id):
+    with get_connection() as connection:
+        company = connection.execute(
+            "SELECT name, database_file FROM companies WHERE id = ?", (company_id,)
+        ).fetchone()
+    if company is None:
+        return None
+    return COMPANY_DATABASE_DIR / (company["database_file"] or f"{company_database_slug(company['name'])}.db")
 
 
 def initialize_database():
@@ -100,6 +138,13 @@ def initialize_database():
             )
             """
         )
+        company_columns = {
+            row["name"] for row in connection.execute("PRAGMA table_info(companies)")
+        }
+        if "database_file" not in company_columns:
+            connection.execute("ALTER TABLE companies ADD COLUMN database_file TEXT")
+        if "logo_file" not in company_columns:
+            connection.execute("ALTER TABLE companies ADD COLUMN logo_file TEXT")
         connection.executemany(
             "INSERT OR IGNORE INTO companies (name) VALUES (?)",
             [
@@ -133,6 +178,67 @@ def initialize_database():
             "UPDATE equipment SET company_id = ? WHERE company_id IS NULL",
             (default_company_id,),
         )
+        legacy_records = [
+            dict(row)
+            for row in connection.execute("SELECT * FROM equipment").fetchall()
+        ]
+
+        used_files = set()
+        companies = connection.execute("SELECT id, name, database_file FROM companies ORDER BY id").fetchall()
+        for company in companies:
+            if company["database_file"]:
+                used_files.add(company["database_file"])
+                continue
+            base_name = company_database_slug(company["name"])
+            database_file = f"{base_name}.db"
+            suffix = 2
+            while database_file in used_files:
+                database_file = f"{base_name}-{suffix}.db"
+                suffix += 1
+            connection.execute(
+                "UPDATE companies SET database_file = ? WHERE id = ?",
+                (database_file, company["id"]),
+            )
+            used_files.add(database_file)
+
+        connection.execute(
+            "UPDATE companies SET logo_file = ? WHERE name = ? AND logo_file IS NULL",
+            (LOGO_PATH.name, "Equipos Gleason S.A."),
+        )
+        connection.execute(
+            "UPDATE companies SET logo_file = ? WHERE name = ? AND logo_file IS NULL",
+            (DEJANDO_HUELLA_LOGO_PATH.name, "Dejando Huella Fertilidad"),
+        )
+
+    with get_connection() as connection:
+        companies = connection.execute(
+            "SELECT id, name, database_file FROM companies ORDER BY id"
+        ).fetchall()
+    for company in companies:
+        database_path = COMPANY_DATABASE_DIR / company["database_file"]
+        initialize_company_database(database_path)
+        records = [
+            record
+            for record in legacy_records
+            if record.get("company_id") == company["id"]
+        ]
+        if not records:
+            continue
+        with get_connection(database_path) as company_connection:
+            if company_connection.execute("SELECT COUNT(*) FROM equipment").fetchone()[0] > 0:
+                continue
+            fields_sql = ", ".join(f'"{key}"' for key in FIELD_KEYS)
+            placeholders = ", ".join("?" for _ in FIELD_KEYS)
+            for record in records:
+                company_connection.execute(
+                    f"INSERT INTO equipment ({fields_sql}, created_at, updated_at) "
+                    f"VALUES ({placeholders}, ?, ?)",
+                    [
+                        *(record[key] for key in FIELD_KEYS),
+                        record.get("created_at", ""),
+                        record.get("updated_at", ""),
+                    ],
+                )
 
 
 def admin_exists():
@@ -171,28 +277,76 @@ def get_companies():
         return [
             dict(row)
             for row in connection.execute(
-                "SELECT id, name FROM companies ORDER BY name COLLATE NOCASE"
+                "SELECT id, name, database_file, logo_file FROM companies ORDER BY name COLLATE NOCASE"
             ).fetchall()
         ]
 
 
-def create_company(name):
+def save_company_logo(uploaded_logo, company_name):
+    if uploaded_logo is None:
+        return None
+    extension = Path(uploaded_logo.name).suffix.lower()
+    if extension not in {".png", ".jpg", ".jpeg", ".webp"}:
+        raise ValueError("El logo debe ser una imagen PNG, JPG, JPEG o WEBP.")
+    logo_directory = BASE_DIR / "logos"
+    logo_directory.mkdir(parents=True, exist_ok=True)
+    base_name = company_database_slug(company_name)
+    logo_file = f"{base_name}{extension}"
+    suffix = 2
+    while (logo_directory / logo_file).exists():
+        logo_file = f"{base_name}-{suffix}{extension}"
+        suffix += 1
+    logo_path = logo_directory / logo_file
+    logo_path.write_bytes(uploaded_logo.getbuffer())
+    return logo_file
+
+
+def get_company_logo(company_id, company_name):
     with get_connection() as connection:
+        company = connection.execute(
+            "SELECT logo_file FROM companies WHERE id = ?", (company_id,)
+        ).fetchone()
+    if company and company["logo_file"]:
+        logo_path = BASE_DIR / "logos" / company["logo_file"]
+        if logo_path.exists():
+            return logo_path
+    return COMPANY_LOGOS.get(company_name)
+
+
+def create_company(name, uploaded_logo=None):
+    with get_connection() as connection:
+        existing_files = {
+            row["database_file"]
+            for row in connection.execute(
+                "SELECT database_file FROM companies WHERE database_file IS NOT NULL"
+            )
+        }
+        base_name = company_database_slug(name.strip())
+        database_file = f"{base_name}.db"
+        suffix = 2
+        while database_file in existing_files:
+            database_file = f"{base_name}-{suffix}.db"
+            suffix += 1
+        logo_file = save_company_logo(uploaded_logo, name.strip())
         cursor = connection.execute(
-            "INSERT INTO companies (name) VALUES (?)", (name.strip(),)
+            "INSERT INTO companies (name, database_file, logo_file) VALUES (?, ?, ?)",
+            (name.strip(), database_file, logo_file),
         )
+        initialize_company_database(COMPANY_DATABASE_DIR / database_file)
         return cursor.lastrowid
 
 
 def get_equipment(company_id):
-    with get_connection() as connection:
+    database_path = get_company_database_path(company_id)
+    if database_path is None:
+        return []
+    with get_connection(database_path) as connection:
         return [
             dict(row)
             for row in connection.execute(
                 "SELECT id, "
                 + ", ".join(f'"{key}"' for key in FIELD_KEYS)
-                + " FROM equipment WHERE company_id = ? ORDER BY id DESC",
-                (company_id,),
+                + " FROM equipment ORDER BY id DESC"
             ).fetchall()
         ]
 
@@ -201,27 +355,32 @@ def save_equipment(values, company_id, equipment_id=None):
     fields_sql = ", ".join(f'"{key}"' for key in FIELD_KEYS)
     values_sql = ", ".join("?" for _ in FIELD_KEYS)
     field_values = [values[key] for key in FIELD_KEYS]
-    with get_connection() as connection:
+    database_path = get_company_database_path(company_id)
+    if database_path is None:
+        return
+    with get_connection(database_path) as connection:
         if equipment_id is None:
             connection.execute(
-                f"INSERT INTO equipment (company_id, {fields_sql}) "
-                f"VALUES (?, {values_sql})",
-                [company_id, *field_values],
+                f"INSERT INTO equipment ({fields_sql}) VALUES ({values_sql})",
+                field_values,
             )
         else:
             assignments = ", ".join(f'"{key}" = ?' for key in FIELD_KEYS)
             connection.execute(
                 f"UPDATE equipment SET {assignments}, updated_at = CURRENT_TIMESTAMP "
-                "WHERE id = ? AND company_id = ?",
-                [*field_values, equipment_id, company_id],
+                "WHERE id = ?",
+                [*field_values, equipment_id],
             )
 
 
 def delete_equipment(equipment_id, company_id):
-    with get_connection() as connection:
+    database_path = get_company_database_path(company_id)
+    if database_path is None:
+        return
+    with get_connection(database_path) as connection:
         connection.execute(
-            "DELETE FROM equipment WHERE id = ? AND company_id = ?",
-            (equipment_id, company_id),
+            "DELETE FROM equipment WHERE id = ?",
+            (equipment_id,),
         )
 
 
@@ -386,6 +545,10 @@ def render_company_management():
     with st.sidebar.expander("Agregar empresa"):
         with st.form("create_company_form"):
             company_name = st.text_input("Nombre de la empresa")
+            company_logo = st.file_uploader(
+                "Logo de la empresa",
+                type=["png", "jpg", "jpeg", "webp"],
+            )
             submitted = st.form_submit_button("Agregar empresa")
         if submitted:
             company_name = company_name.strip()
@@ -398,7 +561,11 @@ def render_company_management():
             ):
                 st.sidebar.error("Ya existe una empresa con ese nombre.")
                 return
-            company_id = create_company(company_name)
+            try:
+                company_id = create_company(company_name, company_logo)
+            except ValueError as error:
+                st.sidebar.error(str(error))
+                return
             st.session_state["company_selected"] = company_id
             st.rerun()
 
@@ -469,7 +636,7 @@ if selected_company_id not in company_names:
 selected_company_name = company_names[selected_company_id]
 header_logo, header_title = st.columns([1, 3])
 with header_logo:
-    company_logo = COMPANY_LOGOS.get(selected_company_name)
+    company_logo = get_company_logo(selected_company_id, selected_company_name)
     if company_logo and company_logo.exists():
         st.image(str(company_logo), width=220)
 

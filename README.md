@@ -36,9 +36,16 @@ Streamlit con `python -m streamlit run app.py --server.address 0.0.0.0` y limita
 el acceso mediante la red y el firewall de la empresa. El acceso de lectura no
 solicita contraseña; no publiques esta aplicación directamente en Internet.
 
-Los datos se guardan en `inventario.db` junto a la aplicación. Mantén una copia
-de seguridad de ese archivo. La contraseña del administrador se almacena como
-un hash con salt; no se guarda en texto plano.
+La configuración y los usuarios se guardan en `db/inventario.db`. El inventario
+de cada empresa se guarda por separado en `db/empresas/<empresa>.db`. Los logos se buscan en
+`logos/Logo-con-Slogan.jpg` y `logos/logo-dejando-huella.png`. Mantén una copia
+de seguridad de `db/inventario.db` y de cada archivo dentro de `db/empresas`.
+La contraseña del administrador se almacena como un hash con salt; no se guarda
+en texto plano.
+
+Al agregar una empresa desde el panel de administrador, puedes seleccionar su
+logo en formato PNG, JPG, JPEG o WEBP. El archivo se guarda en `logos/` y queda
+asociado a esa empresa.
 
 ## Campos de la hoja de vida
 
