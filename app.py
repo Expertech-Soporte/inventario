@@ -695,10 +695,7 @@ def render_company_management():
             key="company_to_delete",
         )
         company_name = company_names[company_id]
-        st.sidebar.warning(
-            f"Se eliminará '{company_name}' y todos sus equipos. "
-            "Se conservará una copia de seguridad de su base."
-        )
+        
         confirmed = st.checkbox(
             "Confirmo eliminar esta empresa y su inventario",
             key="confirm_delete_company",
